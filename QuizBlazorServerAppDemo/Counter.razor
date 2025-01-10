@@ -1,0 +1,168 @@
+@page "/counter"
+
+<PageTitle>Quiz Generator</PageTitle>
+
+<h1>Musical Instrument Quiz</h1>
+
+<button class="btn btn-primary" @onclick="GenerateQuiz">Generate Quiz</button>
+
+@if (generatedQuiz != null)
+{
+    <ul>
+        @foreach (var question in generatedQuiz)
+        {
+            <li>
+                <strong>Question @question.QuestionNumber:</strong> @question.Question
+                <ul>
+                    @for (int i = 1; i <= 4; i++)
+                    {
+                        <li>
+                            <input type="radio"
+                                   id="@($"question_{question.QuestionNumber}_option_{i}")"
+                                   name="@($"question_{question.QuestionNumber}")"
+                                   value="@i" />
+                            <label for="@($"question_{question.QuestionNumber}_option_{i}")">
+                                @((string)typeof(MyQuiz).GetProperty($"Answer{i}").GetValue(question))
+                            </label>
+                        </li>
+                    }
+                </ul>
+                <p>
+                    <em>Correct Answer:</em>
+                    @if (question.ShowAnswer)
+                    {
+                        <span>@question.CorrectAnswer</span>
+                    }
+                    else
+                    {
+                        <button type="button" @onclick="() => question.ShowAnswer = true">
+                            Show Answer
+                        </button>
+                    }
+                </p>
+            </li>
+        }
+    </ul>
+}
+
+@using System
+@using System.Collections.Generic
+@using System.Threading.Tasks
+@using Azure
+@using Azure.AI.OpenAI
+@using Azure.AI.OpenAI.Chat
+@using OpenAI.Chat
+@using System.Text.Json
+@using QuizBlazorServerAppDemo.Data
+@using System.ClientModel
+@using static System.Environment
+
+@code {
+
+    #pragma warning disable AOAI001 // Suppress the diagnostic warning
+
+    private string endpoint = ""; // AZURE_OPENAI_ENDPOINT
+    private string deploymentName = ""; // AZURE_OPENAI_DEPLOYMENT_ID
+    private string searchEndpoint = ""; // AZURE_AI_SEARCH_ENDPOINT
+    private string searchIndex = ""; // AZURE_AI_SEARCH_INDEX
+    private string searchKey = ""; // AZURE_AI_SEARCH_KEY
+    private string openAiApiKey = ""; // AZURE_OPENAI_KEY
+
+    private ChatClient chatClient;
+    private ChatCompletionOptions chatCompletionOptions;
+
+    private List<MyQuiz> generatedQuiz = null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        AzureOpenAIClient azureClient = new(
+            new Uri(endpoint),
+            new ApiKeyCredential(openAiApiKey));
+        chatClient = azureClient.GetChatClient(deploymentName);
+
+        // Setup chat completion options with Azure Search data source
+        chatCompletionOptions = new ChatCompletionOptions
+            {
+                Temperature = 0.7f,
+                TopP = 0.95f,
+                FrequencyPenalty = 0,
+                PresencePenalty = 0
+            };
+        chatCompletionOptions.AddDataSource(new AzureSearchChatDataSource()
+            {
+                Endpoint = new Uri(searchEndpoint),
+                IndexName = searchIndex,
+                Authentication = DataSourceAuthentication.FromApiKey(searchKey), // Add your Azure AI Search admin key here
+            });
+    }
+
+    private void GenerateQuiz()
+    {
+        try
+        {
+            // Create chat completion request
+            ChatCompletion completion = chatClient.CompleteChat(
+                new List<ChatMessage>()
+                                {
+                    new SystemChatMessage(@"
+                        Create a quiz to evaluate the skills of a musician apprentice in classifying musical instruments.
+
+                        The quiz requirements are as follows:
+
+                        - Each question should feature four answer options. Only one answer will be correct, while the other three will be deceptively incorrect.
+                        - The order of the answers should be randomized.
+                        - The quiz will contain five questions in total.
+                        - The output of the quiz must be in valid JSON format, with one row (object) per question following the key structure: ""QuestionNumber"", ""Question"", ""Answer1"", ""Answer2"", ""Answer3"", ""Answer4"", and ""CorrectAnswer"".
+
+                        # Output Format
+
+                        Output a JSON array containing five objects, each representing one question in the quiz. Each object should have the following keys and structure:
+
+                        - ""QuestionNumber"": An integer representing the question number (1–5).
+                        - ""Question"": The formulated question text.
+                        - ""Answer1"" to ""Answer4"": Strings representing the four answer options, including both the correct and incorrect answers in random order.
+                        - ""CorrectAnswer"": The exact text of the correct answer string.
+
+                        The JSON output should **NOT** be wrapped in markdown code blocks (```).
+
+                        # Examples
+
+                        Here’s an example structure for one question:
+
+                        [
+                        {
+                          ""QuestionNumber"": 1,
+                          ""Question"": ""Which of the following is a string instrument?"",
+                          ""Answer1"": ""Oboe"",
+                          ""Answer2"": ""Violin"",
+                          ""Answer3"": ""Trumpet"",
+                          ""Answer4"": ""Flute"",
+                          ""CorrectAnswer"": ""Violin""
+                        }
+                        ]
+
+                        Real examples should use other instrument-related classifications (e.g., percussion, brass, woodwinds, etc.) and include randomization of the answer order.
+                    "),
+                    new UserChatMessage("Generate the JSON quiz based on the provided instructions.")
+                            },
+                chatCompletionOptions
+            );
+
+            var generatedQuizStr = completion.Content[0].Text;
+
+            // Options to handle case-insensitive property matching
+            var options = new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                };
+
+            // Deserialize the JSON string into a list of Question objects
+            generatedQuiz = JsonSerializer.Deserialize<List<MyQuiz>>(generatedQuizStr, options);
+        }
+        catch (Exception ex)
+        {
+            var err = ex.Message;
+        }
+    }
+#pragma warning restore AOAI001 // Restore the diagnostic warning
+}
